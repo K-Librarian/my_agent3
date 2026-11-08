@@ -8,7 +8,8 @@ import tempfile
 from typing import Any
 
 import fitz
-from artifact_tool import Blob, SpreadsheetFile, Workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import PatternFill, Font, Alignment
 
 CIRCLED = {'①': 1, '②': 2, '③': 3, '④': 4, '⑤': 5}
 
@@ -19,15 +20,12 @@ def pdf_text(raw: bytes) -> str:
 
 
 def read_spreadsheet(raw: bytes) -> list[list]:
-    # artifact_tool은 파일 기반 import를 지원하므로 임시 파일을 사용
-    with tempfile.TemporaryDirectory() as td:
-        p = Path(td) / 'omr.xlsx'
-        p.write_bytes(raw)
-        workbook = SpreadsheetFile.import_xlsx(Blob.load(str(p)))
-        sheets = list(workbook.worksheets.items)
-        if not sheets:
-            raise ValueError('엑셀에 시트가 없습니다.')
-        return sheets[0].get_used_range().values
+    workbook = load_workbook(BytesIO(raw), read_only=True, data_only=True)
+    try:
+        sheet = workbook.worksheets[0]
+        return [list(row) for row in sheet.iter_rows(values_only=True)]
+    finally:
+        workbook.close()
 
 
 def detect_files(files: list[tuple[str, bytes]]) -> dict[str, tuple[str, bytes]]:
@@ -119,6 +117,8 @@ def grade(answer_pdf: bytes, omr_xlsx: bytes) -> dict:
     questions = sorted(answer_map)
     out = []
     for n, record in enumerate(rows[1:], start=2):
+        if all(v is None or str(v).strip() == "" for v in record):
+            continue
         student = str(record[student_col]).strip() if len(record) > student_col and record[student_col] is not None else ''
         if not student:
             raise ValueError(f'OMR 엑셀 {n}행 학생 식별자가 비어 있습니다.')
@@ -145,31 +145,48 @@ def grade(answer_pdf: bytes, omr_xlsx: bytes) -> dict:
 
 
 def make_excel(graded: dict) -> bytes:
-    """하나의 워크시트에 통계 + 학생별 점수/정오표를 함께 기록."""
-    wb = Workbook.create()
-    sh = wb.worksheets.add('성적분석')
-    stats = graded['stats']
-    questions = sorted(graded['answers'])
-    sh.get_range('A1').values = [['영어 모의고사 자동 채점 결과']]
-    sh.get_range('A2:B7').values = [
-        ['응시 학생 수', stats['count']],
-        ['총 배점', stats['maximum']],
-        ['평균', round(stats['mean'], 4)],
-        ['중앙값', round(stats['median'], 4)],
-        ['표준편차 (모집단)', round(stats['std'], 4)],
-        ['오답 많은 문항 TOP 3', ', '.join(f'{q}번' for q in stats['top3'])],
+    """하나의 워크시트에 통계와 문항별 학생 채점 결과 저장."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "성적분석"
+    stats = graded["stats"]
+    questions = sorted(graded["answers"])
+
+    ws["A1"] = "영어 모의고사 자동 채점 결과"
+    ws["A1"].font = Font(size=15, bold=True)
+    summary = [
+        ("응시 학생 수", stats["count"]),
+        ("총 배점", stats["maximum"]),
+        ("평균", round(stats["mean"], 4)),
+        ("중앙값", round(stats["median"], 4)),
+        ("표준편차 (모집단)", round(stats["std"], 4)),
+        ("오답 많은 문항 TOP 3", ", ".join(f"{q}번" for q in stats["top3"])),
     ]
-    sh.get_range('A9').values = [['학생별 성적 및 문항별 정답 여부 (O=정답, X=오답)']]
-    header = ['학생명', '점수'] + [f'Q{q:02d}' for q in questions]
-    matrix = [header] + [[r['student'],r['score']] + ['O' if r['correct'][q] else 'X' for q in questions]
-                          for r in graded['students']]
-    sh.get_range_by_indexes(9, 0, len(matrix), len(header)).values = matrix
-    sh.get_range('A:A').format.column_width = 22
-    sh.get_range('B:B').format.column_width = 15
-    sh.get_range_by_indexes(0, 2, 1, len(header)-2).format.column_width = 9
-    sh.get_range_by_indexes(9, 0, 1, len(header)).format.fill = '#DCEAF8'
-    sh.get_range('A1:B1').format.fill = '#DCEAF8'
-    with tempfile.TemporaryDirectory() as td:
-        p = Path(td) / 'report.xlsx'
-        SpreadsheetFile.export_xlsx(wb).save(str(p))
-        return p.read_bytes()
+    for row, (label, value) in enumerate(summary, start=2):
+        ws.cell(row=row, column=1, value=label)
+        ws.cell(row=row, column=2, value=value)
+    ws["A9"] = "학생별 성적 및 문항별 정답 여부 (O=정답, X=오답)"
+    ws["A9"].font = Font(bold=True)
+
+    headers = ["학생명", "점수"] + [f"Q{q:02d}" for q in questions]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=10, column=col, value=header)
+        cell.fill = PatternFill("solid", fgColor="DCEAF8")
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center")
+    for row_i, result in enumerate(graded["students"], start=11):
+        row = [result["student"], result["score"]] + [
+            "O" if result["correct"][q] else "X" for q in questions
+        ]
+        for col_i, value in enumerate(row, start=1):
+            ws.cell(row=row_i, column=col_i, value=value)
+    ws.column_dimensions["A"].width = 25
+    ws.column_dimensions["B"].width = 20
+    for col in range(3, len(headers) + 1):
+        ws.column_dimensions[ws.cell(row=10, column=col).column_letter].width = 8
+    ws.freeze_panes = "C11"
+    ws.auto_filter.ref = f"A10:{ws.cell(row=10, column=len(headers)).column_letter}{10 + len(graded['students'])}"
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()

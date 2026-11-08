@@ -1,3 +1,4 @@
 streamlit
 pymupdf
-artifact-tool
+openpyxl
+openai

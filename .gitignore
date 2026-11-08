@@ -1,0 +1,15 @@
+# API 키 및 환경 설정
+.streamlit/secrets.toml
+.env
+
+# Python 가상환경
+.venv/
+venv/
+
+# Python 캐시 파일
+__pycache__/
+*.pyc
+
+# 운영체제 관련 파일
+.DS_Store
+Thumbs.db
