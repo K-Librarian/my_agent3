@@ -2,8 +2,11 @@
 
 
 학번: 202334433
+
 이름: 김승연
+
 배포 URL: https://myagent3-jvdhxj635qgiaadddkrhkg.streamlit.app
+
 기능: PDF 문제지/정답지 및 OMR XLSX를 **한 업로드 창**에서 자동 분류, 정답 PDF 자동 읽기, 자동 채점, 통계 및 **단일 워크시트 엑셀** 다운로드.
 
 ## 실행
